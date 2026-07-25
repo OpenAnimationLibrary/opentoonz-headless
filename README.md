@@ -25,27 +25,53 @@ State persists across eval calls within a session — variables created in one c
 | Auto-inbetweening | `Inbetween` | Generate intermediate vector frames between key drawings |
 | Mesh deformation | `PlasticRig` | Build deformation skeletons with animatable vertices |
 | Built-in effects | `Effect` | Access 145 effects (particles, blur, glow, etc.) by identifier |
-| Rendering | `Rasterizer`, `Renderer` | Rasterize vector art to PNG, render complete scenes |
+| Rendering | `Rasterizer`, `Renderer` | Rasterize supported image types and render complete scenes |
 
-### Quick Example
+### Quick Example: Render Vector Art Through a Scene
+
+The most reliable path for vector output is to place the vector image in a level and scene, then render it with `Renderer`.
 
 ```javascript
-// Create a palette and a simple character
-var pal = new Palette(); pal.addPage("ink");
-var ink = pal.addColor(40, 40, 40, 255);
+// Create a palette
+var pal = new Palette();
+var red = pal.addColor(255, 0, 0, 255);
+var blue = pal.addColor(0, 80, 255, 255);
 
+// Create visible vector artwork
 var vi = new VectorImage();
-var head = new Stroke();
-head.addPoints([[-25,60,2],[0,90,2],[25,60,2],[0,30,2],[-25,60,2]]);
-head.build(); head.close(); head.setStyle(ink);
-vi.addStroke(head);
 vi.setPalette(pal);
+vi.addFilledRect(-180, -180, 180, 180, 12, red, red);
+vi.addFilledRect(-90, -90, 90, 90, 12, blue, blue);
 
-// Rasterize to PNG
-var rast = new Rasterizer();
-rast.xres = 512; rast.yres = 512; rast.dpi = 72;
-rast.rasterize(vi.toImage()).save("/tmp/character.png");
+// Put the vector image in a level and scene
+var scene = new Scene();
+scene.setCameraSize(512, 512);
+scene.setFrameRate(24);
+
+var level = scene.newLevel("Vector", "example_vector");
+level.setPalette(pal);
+level.setFrame(1, vi.toImage());
+scene.setCell(0, 0, level, 1);
+
+// Render frame 0 to PNG
+var renderer = new Renderer();
+var output = renderer.renderFrame(scene, 0);
+output.save("/tmp/vector_render.png");
 ```
+
+#### Direct `Rasterizer` note
+
+In testing, direct rasterization of a `VectorImage` using the pattern below produced a valid but blank PNG, while the same vector image rendered correctly through `Scene` and `Renderer`:
+
+```javascript
+var rast = new Rasterizer();
+rast.xres = 512;
+rast.yres = 512;
+rast.dpi = 72;
+rast.rasterize(vi.toImage()).save("/tmp/vector.png");
+```
+
+Until the direct vector rasterization path is confirmed or corrected, use the `Scene` + `Renderer` workflow above for vector output. `RasterCanvas` output has also been verified to save correctly as colored PNG images.
 
 For the full API reference, see [HEADLESS_API.md](./HEADLESS_API.md).
 
@@ -87,6 +113,25 @@ The binary is at `toonz/sources/build/bin/toonz_headless`.
 ```bash
 echo '{"id":1,"method":"ping","params":{}}' | ./bin/toonz_headless
 ```
+
+### WSL 2 and display-less environments
+
+The Linux build has been successfully configured, compiled, and exercised under Ubuntu running in WSL 2 on Windows 10. For WSL, CI, containers, and other environments without a graphical display, launch with Qt's offscreen platform:
+
+```bash
+QT_QPA_PLATFORM=offscreen ./bin/toonz_headless
+```
+
+A complete smoke test can send `ping` followed by a clean shutdown:
+
+```bash
+printf '%s\n' \
+  '{"id":1,"method":"ping","params":{}}' \
+  '{"id":2,"method":"quit","params":{}}' \
+  | QT_QPA_PLATFORM=offscreen ./bin/toonz_headless
+```
+
+Expected responses include `"pong"` and `"bye"`.
 
 ## Documentation
 
