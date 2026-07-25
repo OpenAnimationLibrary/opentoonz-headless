@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Portable JSON-RPC smoke test for the OpenToonz headless executable."""
+"""JSON-RPC smoke test for the OpenToonz headless executable."""
 
 from __future__ import annotations
 
@@ -10,20 +10,42 @@ import subprocess
 import sys
 
 
-def read_json_line(process: subprocess.Popen[str]) -> dict:
+def read_json_message(process: subprocess.Popen[str]) -> dict:
+    """Read the next JSON object while ignoring startup diagnostic lines."""
     assert process.stdout is not None
-    line = process.stdout.readline()
-    if not line:
-        stderr = process.stderr.read() if process.stderr else ""
-        raise RuntimeError(
-            f"Headless process ended before returning JSON.\n{stderr}"
-        )
-    return json.loads(line)
+    diagnostics: list[str] = []
+
+    while True:
+        line = process.stdout.readline()
+        if not line:
+            stderr = process.stderr.read() if process.stderr else ""
+            raise RuntimeError(
+                "Headless process ended before returning JSON.\n"
+                f"stdout diagnostics:\n{'\n'.join(diagnostics)}\n"
+                f"stderr:\n{stderr}"
+            )
+
+        stripped = line.strip()
+        if not stripped:
+            continue
+
+        try:
+            message = json.loads(stripped)
+        except json.JSONDecodeError:
+            diagnostics.append(stripped)
+            print(f"[toonz_headless] {stripped}", file=sys.stderr)
+            continue
+
+        if isinstance(message, dict):
+            return message
 
 
 def main() -> int:
     if len(sys.argv) != 2:
-        print(f"Usage: {Path(sys.argv[0]).name} <toonz_headless executable>", file=sys.stderr)
+        print(
+            f"Usage: {Path(sys.argv[0]).name} <toonz_headless executable>",
+            file=sys.stderr,
+        )
         return 2
 
     binary = Path(sys.argv[1]).resolve()
@@ -45,7 +67,7 @@ def main() -> int:
     )
 
     try:
-        ready = read_json_line(process)
+        ready = read_json_message(process)
         assert ready.get("method") == "ready", ready
 
         requests = [
@@ -59,7 +81,7 @@ def main() -> int:
         for request in requests:
             process.stdin.write(json.dumps(request) + "\n")
             process.stdin.flush()
-            response = read_json_line(process)
+            response = read_json_message(process)
             responses[int(response["id"])] = response
 
         assert responses[1]["result"] == "pong", responses[1]
