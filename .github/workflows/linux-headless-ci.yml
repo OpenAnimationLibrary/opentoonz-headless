@@ -1,4 +1,4 @@
-name: Linux Headless CI
+name: Headless CI
 
 on:
   pull_request:
@@ -17,18 +17,19 @@ permissions:
   contents: read
 
 concurrency:
-  group: linux-headless-${{ github.workflow }}-${{ github.ref }}
+  group: headless-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
-  BUILD_DIR: toonz/sources/build
   QT_QPA_PLATFORM: offscreen
 
 jobs:
-  build-and-test:
+  linux:
     name: Ubuntu 22.04 / GCC / Qt 5
     runs-on: ubuntu-22.04
     timeout-minutes: 90
+    env:
+      BUILD_DIR: toonz/sources/build
 
     steps:
       - name: Check out source
@@ -76,65 +77,121 @@ jobs:
         run: cmake --build "$BUILD_DIR" --target toonz_headless --parallel "$(nproc)"
 
       - name: Run JSON-RPC smoke test
-        run: |
-          python3 - <<'PY'
-          import json
-          import os
-          import subprocess
-          import sys
-
-          binary = os.path.join(os.environ["BUILD_DIR"], "bin", "toonz_headless")
-          process = subprocess.Popen(
-              [binary],
-              stdin=subprocess.PIPE,
-              stdout=subprocess.PIPE,
-              stderr=subprocess.PIPE,
-              text=True,
-              bufsize=1,
-              env={**os.environ, "QT_QPA_PLATFORM": "offscreen"},
-          )
-
-          try:
-              ready = json.loads(process.stdout.readline())
-              assert ready.get("method") == "ready", ready
-
-              requests = [
-                  {"id": 1, "method": "ping", "params": {}},
-                  {"id": 2, "method": "eval", "params": {"code": "print(6 * 7)"}},
-                  {"id": 3, "method": "quit", "params": {}},
-              ]
-
-              responses = {}
-              for request in requests:
-                  process.stdin.write(json.dumps(request) + "\n")
-                  process.stdin.flush()
-                  response = json.loads(process.stdout.readline())
-                  responses[response["id"]] = response
-
-              assert responses[1]["result"] == "pong", responses[1]
-              assert responses[2]["result"]["ok"] is True, responses[2]
-              assert responses[2]["result"]["output"].strip() == "42", responses[2]
-              assert responses[3]["result"] == "bye", responses[3]
-
-              return_code = process.wait(timeout=15)
-              assert return_code == 0, return_code
-              print("JSON-RPC smoke test passed")
-          except Exception:
-              process.kill()
-              stderr = process.stderr.read()
-              if stderr:
-                  print(stderr, file=sys.stderr)
-              raise
-          PY
+        run: python3 .github/scripts/headless_smoke_test.py "$BUILD_DIR/bin/toonz_headless"
 
       - name: Show compiler cache statistics
         if: always()
         run: ccache --show-stats
 
-      - name: Upload headless binary
+      - name: Upload Linux headless binary
         uses: actions/upload-artifact@v4
         with:
           name: opentoonz-headless-linux-x64
           path: toonz/sources/build/bin/toonz_headless
+          if-no-files-found: error
+          retention-days: 7
+
+  windows:
+    name: Windows 2022 / MSVC / Qt 5
+    runs-on: windows-2022
+    timeout-minutes: 120
+    env:
+      BUILD_DIR: toonz/sources/build-win
+      QT_PATH: ${{ github.workspace }}\thirdparty\qt\5.15.2_wintab\msvc2019_64
+      OPENCV_VERSION: 4.13.0
+      OPENCV_DIR: C:\Tools\opencv\build
+      CI_CACHE: ${{ github.workspace }}\.ci-cache
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Cache Windows dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            .ci-cache
+            C:\Tools\opencv
+          key: windows-ot-headless-deps-v1-qt-5.15.2-opencv-${{ env.OPENCV_VERSION }}
+
+      - name: Download and prepare dependencies
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path $env:CI_CACHE | Out-Null
+
+          if (-not (Test-Path 'C:\Tools\opencv\build')) {
+            choco install opencv --version=$env:OPENCV_VERSION --no-progress --yes --force
+          }
+
+          $qtArchive = Join-Path $env:CI_CACHE 'Qt5.15.2_wintab.zip'
+          if (-not (Test-Path $qtArchive)) {
+            curl.exe -fsSL -o $qtArchive 'https://github.com/shun-iwasawa/qt5/releases/download/v5.15.2_wintab/Qt5.15.2_wintab.zip'
+          }
+          if (-not (Test-Path $env:QT_PATH)) {
+            7z x $qtArchive "-o$env:CI_CACHE\qt-extract" -y | Out-Null
+            New-Item -ItemType Directory -Force -Path 'thirdparty\qt' | Out-Null
+            Move-Item "$env:CI_CACHE\qt-extract\Qt5.15.2_wintab\5.15.2_wintab" 'thirdparty\qt\5.15.2_wintab'
+          }
+
+          $libsArchive = Join-Path $env:CI_CACHE 'thirdparty-libs.zip'
+          if (-not (Test-Path $libsArchive)) {
+            curl.exe -fsSL -o $libsArchive 'https://github.com/andeon/opentoonz-thirdparty-libs/releases/download/prebuilt-libs-v1/thirdparty-libs.zip'
+          }
+          7z x $libsArchive "-o$env:GITHUB_WORKSPACE" -y | Out-Null
+
+          Copy-Item 'thirdparty\tiff-4.0.3\libtiff\tif_config.vc.h' 'thirdparty\tiff-4.0.3\libtiff\tif_config.h' -Force
+          Copy-Item 'thirdparty\tiff-4.0.3\libtiff\tiffconf.vc.h' 'thirdparty\tiff-4.0.3\libtiff\tiffconf.h' -Force
+          Copy-Item 'thirdparty\libpng-1.6.21\scripts\pnglibconf.h.prebuilt' 'thirdparty\libpng-1.6.21\pnglibconf.h' -Force
+
+          $boost = Get-ChildItem 'C:\local', 'C:\Libraries' -Directory -ErrorAction SilentlyContinue |
+            Where-Object Name -Like 'boost_*' |
+            Sort-Object Name -Descending |
+            Select-Object -First 1
+          if (-not $boost) { throw 'A preinstalled Boost distribution was not found.' }
+          "BOOST_ROOT=$($boost.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Configure OpenToonz headless
+        shell: pwsh
+        run: |
+          cmake -S toonz/sources -B $env:BUILD_DIR -G 'Visual Studio 17 2022' -A x64 `
+            -DQT_PATH="$env:QT_PATH" `
+            -DBOOST_ROOT="$env:BOOST_ROOT" `
+            -DOpenCV_DIR="$env:OPENCV_DIR" `
+            -DWITH_WINTAB=ON
+
+      - name: Build OpenToonz headless
+        shell: pwsh
+        run: cmake --build $env:BUILD_DIR --config Release --target toonz_headless --parallel
+
+      - name: Locate and deploy runtime dependencies
+        shell: pwsh
+        run: |
+          $binary = Get-ChildItem $env:BUILD_DIR -Recurse -Filter 'toonz_headless.exe' | Select-Object -First 1
+          if (-not $binary) { throw 'toonz_headless.exe was not produced.' }
+          $runtimeDir = $binary.Directory.FullName
+          "HEADLESS_BINARY=$($binary.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "HEADLESS_RUNTIME_DIR=$runtimeDir" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+          & "$env:QT_PATH\bin\windeployqt.exe" --release --no-translations $binary.FullName
+
+          $opencvDll = Get-ChildItem 'C:\Tools\opencv\build\x64' -Recurse -Filter 'opencv_world*.dll' |
+            Where-Object FullName -Match '\\bin\\' | Select-Object -First 1
+          if ($opencvDll) { Copy-Item $opencvDll.FullName $runtimeDir -Force }
+
+          Copy-Item 'thirdparty\glut\3.7.6\lib\glut64.dll' $runtimeDir -Force
+          Copy-Item 'thirdparty\glew\glew-1.9.0\bin\64bit\glew32.dll' $runtimeDir -Force
+          Get-ChildItem 'thirdparty\libmypaint\dist\64' -Filter '*.dll' |
+            Copy-Item -Destination $runtimeDir -Force
+
+      - name: Run JSON-RPC smoke test
+        shell: pwsh
+        run: python .github/scripts/headless_smoke_test.py "$env:HEADLESS_BINARY"
+
+      - name: Upload Windows headless runtime
+        uses: actions/upload-artifact@v4
+        with:
+          name: opentoonz-headless-windows-x64
+          path: ${{ env.HEADLESS_RUNTIME_DIR }}
           if-no-files-found: error
           retention-days: 7
