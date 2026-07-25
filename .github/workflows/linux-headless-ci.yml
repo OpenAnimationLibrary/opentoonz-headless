@@ -1,0 +1,101 @@
+name: Linux Headless CI
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - ".github/workflows/linux-headless-ci.yml"
+      - ".github/scripts/headless_smoke_test.py"
+      - "toonz/sources/toonz_headless/**"
+      - "toonz/sources/include/toonz/scriptbinding_*.h"
+      - "toonz/sources/toonzlib/scriptbinding_*.cpp"
+      - "toonz/sources/CMakeLists.txt"
+      - "toonz/sources/**/CMakeLists.txt"
+  push:
+    branches: [master]
+    paths:
+      - ".github/workflows/linux-headless-ci.yml"
+      - ".github/scripts/headless_smoke_test.py"
+      - "toonz/sources/toonz_headless/**"
+      - "toonz/sources/include/toonz/scriptbinding_*.h"
+      - "toonz/sources/toonzlib/scriptbinding_*.cpp"
+      - "toonz/sources/CMakeLists.txt"
+      - "toonz/sources/**/CMakeLists.txt"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-headless-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  BUILD_DIR: toonz/sources/build
+  QT_QPA_PLATFORM: offscreen
+
+jobs:
+  build-and-test:
+    name: Ubuntu 22.04 / GCC / Qt 5
+    runs-on: ubuntu-22.04
+    timeout-minutes: 75
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake pkg-config ninja-build ccache \
+            libboost-all-dev qtbase5-dev qt5-qmake qtscript5-dev qttools5-dev \
+            qttools5-dev-tools qtmultimedia5-dev libqt5svg5-dev libqt5opengl5-dev \
+            libqt5multimedia5-plugins libqt5serialport5-dev libsuperlu-dev liblz4-dev \
+            libusb-1.0-0-dev liblzo2-dev libpng-dev libjpeg-dev libglew-dev \
+            freeglut3-dev libfreetype6-dev libjson-c-dev libmypaint-dev \
+            libopencv-dev libturbojpeg-dev libomp-dev zlib1g-dev libopenblas-dev
+
+      - name: Restore compiler cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: linux-headless-ccache-${{ hashFiles('toonz/sources/**/*.cpp', 'toonz/sources/**/*.h', 'toonz/sources/**/CMakeLists.txt') }}
+          restore-keys: linux-headless-ccache-
+
+      - name: Configure compiler cache
+        run: |
+          ccache --set-config=max_size=1G
+          ccache --zero-stats
+
+      - name: Build bundled TIFF
+        working-directory: thirdparty/tiff-4.0.3
+        run: |
+          CFLAGS="-fPIC" CXXFLAGS="-fPIC" ./configure --disable-jbig
+          make -j"$(nproc)"
+
+      - name: Configure OpenToonz headless
+        run: |
+          cmake -S toonz/sources -B "$BUILD_DIR" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+      - name: Build OpenToonz headless
+        run: cmake --build "$BUILD_DIR" --target toonz_headless --parallel "$(nproc)"
+
+      - name: Run JSON-RPC smoke test
+        run: python3 .github/scripts/headless_smoke_test.py "$BUILD_DIR/bin/toonz_headless"
+
+      - name: Show compiler cache statistics
+        if: always()
+        run: ccache --show-stats
+
+      - name: Upload Linux headless binary
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: opentoonz-headless-linux-x64
+          path: toonz/sources/build/bin/toonz_headless
+          if-no-files-found: error
+          retention-days: 7
