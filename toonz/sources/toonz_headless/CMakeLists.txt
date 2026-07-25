@@ -11,8 +11,20 @@ target_link_libraries(toonz_headless
     toonzlib
     image
     sound
-    -Wl,--no-as-needed
-    tnzstdfx
-    colorfx
-    -Wl,--as-needed
 )
+
+# GNU linkers may otherwise discard plug-in libraries whose symbols are
+# discovered dynamically. These flags are not valid for MSVC or Apple ld.
+if(UNIX AND NOT APPLE)
+    target_link_libraries(toonz_headless
+        -Wl,--no-as-needed
+        tnzstdfx
+        colorfx
+        -Wl,--as-needed
+    )
+else()
+    target_link_libraries(toonz_headless
+        tnzstdfx
+        colorfx
+    )
+endif()
