@@ -7,7 +7,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-BINARY = Path(__file__).resolve().parents[1] / "build/bin/toonz_headless"
+BINARY = Path(__file__).resolve().parents[2] / "build/bin/toonz_headless"
 OUTPUT = Path("/tmp/opentoonz_headless_palette_io.tpl")
 
 JS_CODE = r'''
